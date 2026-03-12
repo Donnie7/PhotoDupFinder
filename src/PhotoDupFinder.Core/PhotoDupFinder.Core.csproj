@@ -5,11 +5,20 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>PhotoDupFinder.Core</RootNamespace>
+    <IsPackable>true</IsPackable>
+    <PackageId>PhotoDupFinder.Core</PackageId>
+    <Description>Core duplicate-photo detection library used by PhotoDupFinder.</Description>
+    <PackageTags>photos;duplicates;images;metadata;hashing</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Magick.NET-Q8-AnyCPU" />
     <PackageReference Include="MetadataExtractor" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" Link="README.md" />
   </ItemGroup>
 
 </Project>

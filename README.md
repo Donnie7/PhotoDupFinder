@@ -27,6 +27,13 @@ To scan a directory directly:
 dotnet run --project .\src\PhotoDupFinder.Cli -- scan --root "D:\Photos" --csv ".\reports\scan.csv"
 ```
 
+As a packaged .NET tool:
+
+```powershell
+dotnet tool install --global PhotoDupFinder.Tool --add-source https://nuget.pkg.github.com/Donnie7/index.json
+photodupfinder
+```
+
 ## Workflow
 
 1. Choose `Scan directory` from the interactive menu or run the `scan` command.
@@ -38,3 +45,9 @@ dotnet run --project .\src\PhotoDupFinder.Cli -- scan --root "D:\Photos" --csv "
 - Duplicate matching is exact after EXIF orientation normalization.
 - Files that can be discovered but not decoded are marked as `Unverified` rather than silently dropped.
 - v1 recommends what to keep but does not delete, move, or edit photos.
+
+## Versioning and Release Flow
+
+- Pushes to `main` produce preview package versions like `0.1.0-preview.<run number>`.
+- Git tags in the form `v1.2.3` produce release package versions like `1.2.3`.
+- The GitHub Actions workflow validates, packs, publishes NuGet packages to GitHub Packages, and creates a GitHub release for tagged versions.

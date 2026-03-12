@@ -178,11 +178,13 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
 
   private sealed class FakeQuickFingerprintService(Dictionary<string, string> fingerprintsByPath) : IQuickFingerprintService
   {
-    public int CallCount { get; private set; }
+    private int _callCount;
+
+    public int CallCount => _callCount;
 
     public string Create(string path)
     {
-      CallCount++;
+      Interlocked.Increment(ref _callCount);
       return fingerprintsByPath[path];
     }
   }
@@ -204,11 +206,13 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
 
   private sealed class CountingQuickFingerprintService : IQuickFingerprintService
   {
-    public int CallCount { get; private set; }
+    private int _callCount;
+
+    public int CallCount => _callCount;
 
     public string Create(string path)
     {
-      CallCount++;
+      Interlocked.Increment(ref _callCount);
       throw new InvalidOperationException("Quick fingerprint should not be created for this test.");
     }
   }
@@ -216,11 +220,13 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
   private sealed class CountingExactFingerprintService(
     Dictionary<string, PixelFingerprint>? fingerprintsByPath = null) : IPixelFingerprintService
   {
-    public int CallCount { get; private set; }
+    private int _callCount;
+
+    public int CallCount => _callCount;
 
     public PixelFingerprint Create(string path)
     {
-      CallCount++;
+      Interlocked.Increment(ref _callCount);
 
       if (fingerprintsByPath is null)
       {

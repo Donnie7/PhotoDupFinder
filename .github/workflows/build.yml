@@ -1,12 +1,25 @@
-name: build
+name: ci
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  CONFIGURATION: Release
 
 jobs:
   validate:
@@ -15,20 +28,69 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
+          cache: true
+          cache-dependency-path: |
+            global.json
+            Directory.Packages.props
+            **/*.csproj
           global-json-file: global.json
+
+      - name: Compute Version
+        id: version
+        shell: pwsh
+        run: |
+          $tagRef = '${{ github.ref }}'
+          if ($tagRef -like 'refs/tags/v*')
+          {
+            $packageVersion = $tagRef.Substring(11)
+            $releaseVersion = $packageVersion
+            $isRelease = 'true'
+          }
+          else
+          {
+            $packageVersion = '0.1.0-preview.${{ github.run_number }}'
+            $releaseVersion = ''
+            $isRelease = 'false'
+          }
+
+          $baseVersion = ($packageVersion -split '-')[0]
+          $versionParts = $baseVersion.Split('.')
+          $assemblyVersion = '{0}.{1}.{2}.0' -f $versionParts[0], $versionParts[1], $versionParts[2]
+
+          "package_version=$packageVersion" >> $env:GITHUB_OUTPUT
+          "assembly_version=$assemblyVersion" >> $env:GITHUB_OUTPUT
+          "release_version=$releaseVersion" >> $env:GITHUB_OUTPUT
+          "is_release=$isRelease" >> $env:GITHUB_OUTPUT
 
       - name: Restore
         run: dotnet restore PhotoDupFinder.sln
 
       - name: Build
-        run: dotnet build PhotoDupFinder.sln --configuration Release --no-restore
+        run: >
+          dotnet build PhotoDupFinder.sln
+          --configuration ${{ env.CONFIGURATION }}
+          --no-restore
+          /p:Version=${{ steps.version.outputs.package_version }}
+          /p:AssemblyVersion=${{ steps.version.outputs.assembly_version }}
+          /p:FileVersion=${{ steps.version.outputs.assembly_version }}
+          /p:InformationalVersion=${{ steps.version.outputs.package_version }}+sha.${{ github.sha }}
 
       - name: Test
-        run: dotnet test PhotoDupFinder.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
+        run: >
+          dotnet test PhotoDupFinder.sln
+          --configuration ${{ env.CONFIGURATION }}
+          --no-build
+          --logger "trx;LogFileName=test-results.trx"
+          /p:Version=${{ steps.version.outputs.package_version }}
+          /p:AssemblyVersion=${{ steps.version.outputs.assembly_version }}
+          /p:FileVersion=${{ steps.version.outputs.assembly_version }}
+          /p:InformationalVersion=${{ steps.version.outputs.package_version }}+sha.${{ github.sha }}
 
       - name: Format Check
         run: dotnet format PhotoDupFinder.sln --verify-no-changes --no-restore
@@ -41,3 +103,110 @@ jobs:
           path: |
             **/*.trx
             **/TestResults/**
+
+  package:
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    needs:
+      - validate
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          cache: true
+          cache-dependency-path: |
+            global.json
+            Directory.Packages.props
+            **/*.csproj
+          global-json-file: global.json
+
+      - name: Compute Version
+        id: version
+        shell: pwsh
+        run: |
+          $tagRef = '${{ github.ref }}'
+          if ($tagRef -like 'refs/tags/v*')
+          {
+            $packageVersion = $tagRef.Substring(11)
+            $releaseVersion = $packageVersion
+            $isRelease = 'true'
+          }
+          else
+          {
+            $packageVersion = '0.1.0-preview.${{ github.run_number }}'
+            $releaseVersion = ''
+            $isRelease = 'false'
+          }
+
+          $baseVersion = ($packageVersion -split '-')[0]
+          $versionParts = $baseVersion.Split('.')
+          $assemblyVersion = '{0}.{1}.{2}.0' -f $versionParts[0], $versionParts[1], $versionParts[2]
+
+          "package_version=$packageVersion" >> $env:GITHUB_OUTPUT
+          "assembly_version=$assemblyVersion" >> $env:GITHUB_OUTPUT
+          "release_version=$releaseVersion" >> $env:GITHUB_OUTPUT
+          "is_release=$isRelease" >> $env:GITHUB_OUTPUT
+
+      - name: Restore
+        run: dotnet restore PhotoDupFinder.sln
+
+      - name: Pack Core Package
+        run: >
+          dotnet pack src/PhotoDupFinder.Core/PhotoDupFinder.Core.csproj
+          --configuration ${{ env.CONFIGURATION }}
+          --no-restore
+          --output artifacts/packages
+          /p:Version=${{ steps.version.outputs.package_version }}
+          /p:PackageVersion=${{ steps.version.outputs.package_version }}
+          /p:AssemblyVersion=${{ steps.version.outputs.assembly_version }}
+          /p:FileVersion=${{ steps.version.outputs.assembly_version }}
+          /p:InformationalVersion=${{ steps.version.outputs.package_version }}+sha.${{ github.sha }}
+
+      - name: Pack CLI Tool Package
+        run: >
+          dotnet pack src/PhotoDupFinder.Cli/PhotoDupFinder.Cli.csproj
+          --configuration ${{ env.CONFIGURATION }}
+          --no-restore
+          --output artifacts/packages
+          /p:Version=${{ steps.version.outputs.package_version }}
+          /p:PackageVersion=${{ steps.version.outputs.package_version }}
+          /p:AssemblyVersion=${{ steps.version.outputs.assembly_version }}
+          /p:FileVersion=${{ steps.version.outputs.assembly_version }}
+          /p:InformationalVersion=${{ steps.version.outputs.package_version }}+sha.${{ github.sha }}
+
+      - name: Upload Packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ steps.version.outputs.package_version }}
+          path: artifacts/packages/*
+
+      - name: Publish Packages To GitHub Packages
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $packages = Get-ChildItem artifacts/packages/*.nupkg | Where-Object { $_.Name -notlike '*.snupkg' }
+          foreach ($package in $packages)
+          {
+            dotnet nuget push $package.FullName --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" --api-key $env:GITHUB_TOKEN --skip-duplicate
+          }
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.is_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.release_version }}
+          name: PhotoDupFinder ${{ steps.version.outputs.release_version }}
+          generate_release_notes: true
+          files: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
