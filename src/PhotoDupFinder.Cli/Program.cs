@@ -9,6 +9,13 @@ namespace PhotoDupFinder.Cli;
 
 internal static class Program
 {
+  private const string MenuRunScan = "Run scan now";
+  private const string MenuViewLastReport = "View last report";
+  private const string MenuExportLastReport = "Export last report CSV";
+  private const string MenuCommandReference = "Command reference";
+  private const string MenuSettings = "Settings";
+  private const string MenuExit = "Exit";
+
   private static readonly DuplicatePhotoScanner Scanner = new();
   private static readonly CsvReportWriter CsvWriter = new();
   private static readonly UserSettingsStore SettingsStore = new();
@@ -35,6 +42,13 @@ internal static class Program
 
   private static async Task<int> RunCommandAsync(string[] args)
   {
+    if (args[0].Equals("start", StringComparison.OrdinalIgnoreCase) ||
+        args[0].Equals("menu", StringComparison.OrdinalIgnoreCase))
+    {
+      await RunInteractiveAsync().ConfigureAwait(false);
+      return 0;
+    }
+
     if (args[0].Equals("scan", StringComparison.OrdinalIgnoreCase))
     {
       var command = ParseScanCommand(args);
@@ -50,14 +64,24 @@ internal static class Program
       return 0;
     }
 
+    if (args[0].Equals("config", StringComparison.OrdinalIgnoreCase))
+    {
+      var settings = await SettingsStore.LoadAsync().ConfigureAwait(false);
+      RenderBanner();
+      RenderConfigurationSummary(settings, includeCacheLocation: true);
+      return 0;
+    }
+
     if (args[0].Equals("help", StringComparison.OrdinalIgnoreCase) ||
         args[0].Equals("--help", StringComparison.OrdinalIgnoreCase) ||
         args[0].Equals("-h", StringComparison.OrdinalIgnoreCase))
     {
+      RenderBanner();
       RenderHelp();
       return 0;
     }
 
+    RenderBanner();
     RenderError($"Unknown command '{args[0]}'.");
     RenderHelp();
     return 1;
@@ -67,49 +91,77 @@ internal static class Program
   {
     while (true)
     {
+      var settings = await SettingsStore.LoadAsync().ConfigureAwait(false);
       AnsiConsole.Clear();
       RenderBanner();
+      RenderHomeOverview(settings);
 
       var choice = AnsiConsole.Prompt(
         new SelectionPrompt<string>()
           .Title($"[{AppTheme.PrimaryMarkup}]Choose an action[/]")
           .HighlightStyle(new Style(foreground: AppTheme.AccentColor, decoration: Decoration.Bold))
           .AddChoices(
-            "Scan directory",
-            "View last report",
-            "Export last report CSV",
-            "Settings",
-            "Exit"));
+            MenuRunScan,
+            MenuViewLastReport,
+            MenuExportLastReport,
+            MenuCommandReference,
+            MenuSettings,
+            MenuExit));
 
       switch (choice)
       {
-        case "Scan directory":
-          await RunInteractiveScanAsync().ConfigureAwait(false);
+        case MenuRunScan:
+          await RunInteractiveScanAsync(settings).ConfigureAwait(false);
           break;
-        case "View last report":
+        case MenuViewLastReport:
           await ViewLastReportAsync().ConfigureAwait(false);
           break;
-        case "Export last report CSV":
+        case MenuExportLastReport:
           await ExportLastReportAsync().ConfigureAwait(false);
           break;
-        case "Settings":
+        case MenuCommandReference:
+          ShowCommandReference(settings);
+          break;
+        case MenuSettings:
           await ConfigureSettingsAsync().ConfigureAwait(false);
           break;
-        case "Exit":
+        case MenuExit:
           return;
       }
     }
   }
 
-  private static async Task RunInteractiveScanAsync()
+  private static async Task RunInteractiveScanAsync(UserSettings settings)
   {
-    var settings = await SettingsStore.LoadAsync().ConfigureAwait(false);
     var rootPath = AnsiConsole.Prompt(
       new TextPrompt<string>($"[{AppTheme.PrimaryMarkup}]Directory to scan[/]")
         .DefaultValue(settings.DefaultScanRoot ?? Environment.CurrentDirectory)
         .Validate(path => Directory.Exists(path) ?
           ValidationResult.Success() :
           ValidationResult.Error($"[{AppTheme.ErrorMarkup}]Directory not found.[/]")));
+
+    var recursiveChoice = AnsiConsole.Prompt(
+      new SelectionPrompt<string>()
+        .Title($"[{AppTheme.PrimaryMarkup}]Scan subdirectories too?[/]")
+        .AddChoices("Yes", "No"));
+
+    var workerChoice = AnsiConsole.Prompt(
+      new SelectionPrompt<string>()
+        .Title($"[{AppTheme.PrimaryMarkup}]Fingerprint worker setting[/]")
+        .AddChoices(
+          $"Use saved configuration ({settings.MaxDegreeOfParallelism} worker{(settings.MaxDegreeOfParallelism == 1 ? string.Empty : "s")})",
+          "Override for this scan"));
+
+    var maxDegree = settings.MaxDegreeOfParallelism;
+    if (workerChoice == "Override for this scan")
+    {
+      maxDegree = AnsiConsole.Prompt(
+        new TextPrompt<int>($"[{AppTheme.PrimaryMarkup}]Workers for this scan[/]")
+          .DefaultValue(settings.MaxDegreeOfParallelism)
+          .Validate(value => value > 0 ?
+            ValidationResult.Success() :
+            ValidationResult.Error($"[{AppTheme.ErrorMarkup}]Value must be positive.[/]")));
+    }
 
     var exportCsv = AnsiConsole.Prompt(
       new SelectionPrompt<string>()
@@ -128,8 +180,8 @@ internal static class Program
 
     var scanOptions = new ScanOptions(
       RootPath: rootPath,
-      Recursive: true,
-      MaxDegreeOfParallelism: settings.MaxDegreeOfParallelism);
+      Recursive: recursiveChoice == "Yes",
+      MaxDegreeOfParallelism: maxDegree);
 
     var report = await ExecuteScanAsync(scanOptions).ConfigureAwait(false);
     RenderReport(report, browseGroups: true);
@@ -319,6 +371,45 @@ internal static class Program
     AnsiConsole.WriteLine();
   }
 
+  private static void RenderHomeOverview(UserSettings settings)
+  {
+    var commandTable = CreateCommandTable();
+    var configurationTable = CreateConfigurationTable(settings, includeCacheLocation: false);
+
+    var commandPanel = new Panel(commandTable)
+    {
+      Header = new PanelHeader($"[{AppTheme.PrimaryMarkup}]Command Shortcuts[/]"),
+      Border = BoxBorder.Rounded,
+    };
+
+    commandPanel.BorderStyle = new Style(foreground: AppTheme.BorderColor);
+
+    var configurationPanel = new Panel(configurationTable)
+    {
+      Header = new PanelHeader($"[{AppTheme.AccentMarkup}]Current Configuration[/]"),
+      Border = BoxBorder.Rounded,
+    };
+
+    configurationPanel.BorderStyle = new Style(foreground: AppTheme.BorderColor);
+
+    var columns = new Columns([commandPanel, configurationPanel])
+    {
+      Expand = true,
+    };
+
+    AnsiConsole.Write(columns);
+    AnsiConsole.WriteLine();
+  }
+
+  private static void ShowCommandReference(UserSettings settings)
+  {
+    AnsiConsole.Clear();
+    RenderBanner();
+    RenderConfigurationSummary(settings, includeCacheLocation: true);
+    RenderHelp();
+    WaitForKeypress();
+  }
+
   private static void RenderReport(ScanReport report, bool browseGroups)
   {
     ArgumentNullException.ThrowIfNull(report);
@@ -504,20 +595,72 @@ internal static class Program
 
   private static void RenderHelp()
   {
-    RenderBanner();
+    var help = CreateCommandTable();
+
+    var panel = new Panel(help)
+    {
+      Header = new PanelHeader($"[{AppTheme.PrimaryMarkup}]Command Reference[/]"),
+      Border = BoxBorder.Rounded,
+    };
+
+    panel.BorderStyle = new Style(foreground: AppTheme.BorderColor);
+    AnsiConsole.Write(panel);
+    AnsiConsole.WriteLine();
+  }
+
+  private static void RenderConfigurationSummary(UserSettings settings, bool includeCacheLocation)
+  {
+    var panel = new Panel(CreateConfigurationTable(settings, includeCacheLocation))
+    {
+      Header = new PanelHeader($"[{AppTheme.AccentMarkup}]Configuration[/]"),
+      Border = BoxBorder.Rounded,
+    };
+
+    panel.BorderStyle = new Style(foreground: AppTheme.BorderColor);
+    AnsiConsole.Write(panel);
+    AnsiConsole.WriteLine();
+  }
+
+  private static Table CreateCommandTable()
+  {
     var help = new Table()
       .RoundedBorder()
       .BorderColor(AppTheme.BorderColor)
       .AddColumn($"[{AppTheme.SecondaryMarkup}]Command[/]")
       .AddColumn($"[{AppTheme.SecondaryMarkup}]Description[/]");
 
-    help.AddRow("scan --root <path>", "Run a scan against a directory.");
-    help.AddRow("--csv <path>", "Export the report to CSV after the scan.");
-    help.AddRow("--max-degree <n>", "Limit parallel metadata and fingerprint work.");
-    help.AddRow("--non-recursive", "Only scan the top directory.");
+    help.AddRow("photodupfinder start", "Open the interactive home menu.");
+    help.AddRow("photodupfinder menu", "Alias for the home menu.");
+    help.AddRow("photodupfinder scan --root <path>", "Run a scan directly from the command line.");
+    help.AddRow("--csv <path>", "Export the scan result to CSV.");
+    help.AddRow("--max-degree <n>", "Override the worker limit for the scan.");
+    help.AddRow("--non-recursive", "Scan only the top directory.");
     help.AddRow("--extensions .jpg,.png", "Override the supported extension list.");
+    help.AddRow("photodupfinder config", "Show the current saved configuration.");
+    help.AddRow("photodupfinder help", "Show the command reference.");
 
-    AnsiConsole.Write(help);
+    return help;
+  }
+
+  private static Table CreateConfigurationTable(UserSettings settings, bool includeCacheLocation)
+  {
+    var table = new Table()
+      .RoundedBorder()
+      .BorderColor(AppTheme.BorderColor)
+      .AddColumn($"[{AppTheme.SecondaryMarkup}]Setting[/]")
+      .AddColumn($"[{AppTheme.PrimaryMarkup}]Value[/]");
+
+    table.AddRow("Default scan root", Markup.Escape(settings.DefaultScanRoot ?? Environment.CurrentDirectory));
+    table.AddRow("Default CSV folder", Markup.Escape(settings.LastCsvDirectory ?? Path.Combine(Environment.CurrentDirectory, "reports")));
+    table.AddRow("Saved worker limit", settings.MaxDegreeOfParallelism.ToString(CultureInfo.InvariantCulture));
+
+    if (includeCacheLocation)
+    {
+      table.AddRow("Settings file", Markup.Escape(AppPaths.SettingsFilePath));
+      table.AddRow("Last report cache", Markup.Escape(AppPaths.LastReportFilePath));
+    }
+
+    return table;
   }
 
   private static void RenderInfo(string message)
