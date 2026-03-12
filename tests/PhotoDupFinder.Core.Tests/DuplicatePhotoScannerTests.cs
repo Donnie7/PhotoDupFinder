@@ -29,14 +29,19 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
       [unique] = new("JPEG", 1920, 1080, 1920, 1080, 1, null, 0),
     });
 
+    var quickFingerprintService = new FakeQuickFingerprintService(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+      [first] = "QUICK-MATCH",
+      [second] = "QUICK-MATCH",
+    });
+
     var fingerprintService = new FakeFingerprintService(new Dictionary<string, PixelFingerprint>(StringComparer.OrdinalIgnoreCase)
     {
       [first] = new("MATCH", 4000, 3000),
       [second] = new("MATCH", 4000, 3000),
-      [unique] = new("UNIQUE", 1920, 1080),
     });
 
-    var scanner = new DuplicatePhotoScanner(metadataReader, fingerprintService);
+    var scanner = new DuplicatePhotoScanner(metadataReader, quickFingerprintService, fingerprintService);
 
     var report = await scanner.ScanAsync(new ScanOptions(_rootDirectory));
 
@@ -56,14 +61,24 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
   public async Task ScanAsync_TracksUnverifiedFiles_WhenFingerprintingFails()
   {
     var file = CreateFile("broken.jpg", 40);
+    var other = CreateFile("other.jpg", 41);
 
     var scanner = new DuplicatePhotoScanner(
       new FakeMetadataReader(new Dictionary<string, PhotoMetadata>(StringComparer.OrdinalIgnoreCase)
       {
         [file] = new("JPEG", 200, 100, 200, 100, 1, null, 0),
+        [other] = new("JPEG", 200, 100, 200, 100, 1, null, 0),
+      }),
+      new FakeQuickFingerprintService(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+      {
+        [file] = "ONLY",
+        [other] = "ONLY",
       }),
       new FakeFingerprintService(
-        new Dictionary<string, PixelFingerprint>(StringComparer.OrdinalIgnoreCase),
+        new Dictionary<string, PixelFingerprint>(StringComparer.OrdinalIgnoreCase)
+        {
+          [other] = new("OTHER", 200, 100),
+        },
         new Dictionary<string, Exception>(StringComparer.OrdinalIgnoreCase)
         {
           [file] = new InvalidOperationException("decode failed"),
@@ -72,10 +87,72 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
     var report = await scanner.ScanAsync(new ScanOptions(_rootDirectory));
 
     Assert.Equal(0, report.DuplicateGroupCount);
-    Assert.Equal(0, report.VerifiedFiles);
+    Assert.Equal(1, report.VerifiedFiles);
     Assert.Equal(1, report.UnverifiedFiles);
     Assert.Single(report.Issues);
-    Assert.Equal(PhotoVerificationStatus.Unverified, report.AllFiles.Single().Status);
+    Assert.Equal(PhotoVerificationStatus.Unverified, report.AllFiles.Single(item => item.Path == file).Status);
+  }
+
+  [Fact]
+  public async Task ScanAsync_SkipsFingerprinting_WhenDimensionsAreUnique()
+  {
+    var first = CreateFile("a.jpg", 10);
+    var second = CreateFile("b.jpg", 11);
+
+    var quickFingerprintService = new CountingQuickFingerprintService();
+    var exactFingerprintService = new CountingExactFingerprintService();
+
+    var scanner = new DuplicatePhotoScanner(
+      new FakeMetadataReader(new Dictionary<string, PhotoMetadata>(StringComparer.OrdinalIgnoreCase)
+      {
+        [first] = new("JPEG", 4000, 3000, 4000, 3000, 1, null, 0),
+        [second] = new("JPEG", 3000, 2000, 3000, 2000, 1, null, 0),
+      }),
+      quickFingerprintService,
+      exactFingerprintService);
+
+    var report = await scanner.ScanAsync(new ScanOptions(_rootDirectory));
+
+    Assert.Equal(0, report.DuplicateGroupCount);
+    Assert.Equal(0, quickFingerprintService.CallCount);
+    Assert.Equal(0, exactFingerprintService.CallCount);
+  }
+
+  [Fact]
+  public async Task ScanAsync_OnlyExactFingerprints_QuickHashCollisions()
+  {
+    var first = CreateFile("a.jpg", 10);
+    var second = CreateFile("b.jpg", 11);
+    var third = CreateFile("c.jpg", 12);
+
+    var quickFingerprintService = new FakeQuickFingerprintService(new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+      [first] = "Q1",
+      [second] = "Q1",
+      [third] = "Q2",
+    });
+
+    var exactFingerprintService = new CountingExactFingerprintService(new Dictionary<string, PixelFingerprint>(StringComparer.OrdinalIgnoreCase)
+    {
+      [first] = new("EXACT", 4000, 3000),
+      [second] = new("EXACT", 4000, 3000),
+    });
+
+    var scanner = new DuplicatePhotoScanner(
+      new FakeMetadataReader(new Dictionary<string, PhotoMetadata>(StringComparer.OrdinalIgnoreCase)
+      {
+        [first] = new("JPEG", 4000, 3000, 4000, 3000, 1, null, 0),
+        [second] = new("PNG", 4000, 3000, 4000, 3000, 1, null, 0),
+        [third] = new("JPEG", 4000, 3000, 4000, 3000, 1, null, 0),
+      }),
+      quickFingerprintService,
+      exactFingerprintService);
+
+    var report = await scanner.ScanAsync(new ScanOptions(_rootDirectory));
+
+    Assert.Equal(1, report.DuplicateGroupCount);
+    Assert.Equal(3, quickFingerprintService.CallCount);
+    Assert.Equal(2, exactFingerprintService.CallCount);
   }
 
   public void Dispose()
@@ -99,6 +176,17 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
     public PhotoMetadata Read(string path) => metadataByPath[path];
   }
 
+  private sealed class FakeQuickFingerprintService(Dictionary<string, string> fingerprintsByPath) : IQuickFingerprintService
+  {
+    public int CallCount { get; private set; }
+
+    public string Create(string path)
+    {
+      CallCount++;
+      return fingerprintsByPath[path];
+    }
+  }
+
   private sealed class FakeFingerprintService(
     Dictionary<string, PixelFingerprint> fingerprintsByPath,
     Dictionary<string, Exception>? exceptionsByPath = null) : IPixelFingerprintService
@@ -108,6 +196,35 @@ public sealed class DuplicatePhotoScannerTests : IDisposable
       if (exceptionsByPath is not null && exceptionsByPath.TryGetValue(path, out var exception))
       {
         throw exception;
+      }
+
+      return fingerprintsByPath[path];
+    }
+  }
+
+  private sealed class CountingQuickFingerprintService : IQuickFingerprintService
+  {
+    public int CallCount { get; private set; }
+
+    public string Create(string path)
+    {
+      CallCount++;
+      throw new InvalidOperationException("Quick fingerprint should not be created for this test.");
+    }
+  }
+
+  private sealed class CountingExactFingerprintService(
+    Dictionary<string, PixelFingerprint>? fingerprintsByPath = null) : IPixelFingerprintService
+  {
+    public int CallCount { get; private set; }
+
+    public PixelFingerprint Create(string path)
+    {
+      CallCount++;
+
+      if (fingerprintsByPath is null)
+      {
+        throw new InvalidOperationException("Exact fingerprint should not be created for this test.");
       }
 
       return fingerprintsByPath[path];

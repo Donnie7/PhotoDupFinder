@@ -7,13 +7,16 @@ namespace PhotoDupFinder.Core.Services;
 public sealed class DuplicatePhotoScanner
 {
   private readonly IPhotoMetadataReader _metadataReader;
+  private readonly IQuickFingerprintService _quickFingerprintService;
   private readonly IPixelFingerprintService _fingerprintService;
 
   public DuplicatePhotoScanner(
     IPhotoMetadataReader? metadataReader = null,
+    IQuickFingerprintService? quickFingerprintService = null,
     IPixelFingerprintService? fingerprintService = null)
   {
     _metadataReader = metadataReader ?? new PhotoMetadataReader();
+    _quickFingerprintService = quickFingerprintService ?? new QuickFingerprintService();
     _fingerprintService = fingerprintService ?? new PixelFingerprintService();
   }
 
@@ -48,7 +51,12 @@ public sealed class DuplicatePhotoScanner
     var candidates = await ReadMetadataAsync(files, options, issues, progress, cancellationToken)
       .ConfigureAwait(false);
 
-    await GenerateFingerprintsAsync(candidates, options, issues, progress, cancellationToken)
+    var quickFingerprintTargets = GetQuickFingerprintTargets(candidates);
+    await GenerateQuickFingerprintsAsync(quickFingerprintTargets, options, issues, progress, cancellationToken)
+      .ConfigureAwait(false);
+
+    var exactFingerprintTargets = GetExactFingerprintTargets(quickFingerprintTargets);
+    await GenerateExactFingerprintsAsync(exactFingerprintTargets, options, issues, progress, cancellationToken)
       .ConfigureAwait(false);
 
     var report = BuildReport(options.RootPath, startedAt, candidates, issues);
@@ -105,21 +113,51 @@ public sealed class DuplicatePhotoScanner
       .ToList();
   }
 
-  private async Task GenerateFingerprintsAsync(
+  private async Task GenerateQuickFingerprintsAsync(
     IReadOnlyList<PhotoScanCandidate> candidates,
     ScanOptions options,
     ConcurrentBag<ScanIssue> issues,
     IProgress<ScanProgressUpdate>? progress,
     CancellationToken cancellationToken)
   {
-    var fingerprintTargets = candidates
-      .Where(candidate => candidate.Status == PhotoVerificationStatus.Verified && candidate.Metadata is not null)
-      .ToArray();
-
-    var total = fingerprintTargets.Length;
+    var total = candidates.Count;
     var processed = 0;
 
-    await Parallel.ForEachAsync(fingerprintTargets, CreateParallelOptions(options, cancellationToken), (candidate, token) =>
+    await Parallel.ForEachAsync(candidates, CreateParallelOptions(options, cancellationToken), (candidate, token) =>
+    {
+      try
+      {
+        candidate.QuickFingerprint = _quickFingerprintService.Create(candidate.Path);
+      }
+      catch (Exception ex)
+      {
+        candidate.Status = PhotoVerificationStatus.Unverified;
+        candidate.StatusMessage = ex.Message;
+        issues.Add(new ScanIssue(candidate.Path, nameof(ScanStage.Fingerprinting), ex.Message));
+      }
+
+      var current = Interlocked.Increment(ref processed);
+      progress?.Report(new ScanProgressUpdate(
+        ScanStage.Fingerprinting,
+        current,
+        total,
+        $"Quick fingerprinting {current}/{total} candidate files."));
+
+      return ValueTask.CompletedTask;
+    }).ConfigureAwait(false);
+  }
+
+  private async Task GenerateExactFingerprintsAsync(
+    IReadOnlyList<PhotoScanCandidate> candidates,
+    ScanOptions options,
+    ConcurrentBag<ScanIssue> issues,
+    IProgress<ScanProgressUpdate>? progress,
+    CancellationToken cancellationToken)
+  {
+    var total = candidates.Count;
+    var processed = 0;
+
+    await Parallel.ForEachAsync(candidates, CreateParallelOptions(options, cancellationToken), (candidate, token) =>
     {
       try
       {
@@ -137,7 +175,7 @@ public sealed class DuplicatePhotoScanner
         ScanStage.Fingerprinting,
         current,
         total,
-        $"Fingerprinting {current}/{total} files."));
+        $"Exact fingerprinting {current}/{total} duplicate candidates."));
 
       return ValueTask.CompletedTask;
     }).ConfigureAwait(false);
@@ -146,7 +184,7 @@ public sealed class DuplicatePhotoScanner
       ScanStage.Grouping,
       1,
       1,
-      "Grouping verified files by normalized fingerprint."));
+      $"Grouping {total} exact-fingerprint candidates by normalized hash."));
   }
 
   private static ParallelOptions CreateParallelOptions(ScanOptions options, CancellationToken cancellationToken) =>
@@ -246,6 +284,28 @@ public sealed class DuplicatePhotoScanner
         .ToArray());
   }
 
+  private static IReadOnlyList<PhotoScanCandidate> GetQuickFingerprintTargets(
+    IReadOnlyList<PhotoScanCandidate> candidates)
+  {
+    return candidates
+      .Where(candidate => candidate.Status == PhotoVerificationStatus.Verified && candidate.Metadata is not null)
+      .GroupBy(candidate => candidate.DimensionKey, StringComparer.Ordinal)
+      .Where(group => group.Count() > 1)
+      .SelectMany(group => group)
+      .ToArray();
+  }
+
+  private static IReadOnlyList<PhotoScanCandidate> GetExactFingerprintTargets(
+    IReadOnlyList<PhotoScanCandidate> candidates)
+  {
+    return candidates
+      .Where(candidate => candidate.Status == PhotoVerificationStatus.Verified && !string.IsNullOrWhiteSpace(candidate.QuickFingerprint))
+      .GroupBy(candidate => $"{candidate.DimensionKey}:{candidate.QuickFingerprint}", StringComparer.Ordinal)
+      .Where(group => group.Count() > 1)
+      .SelectMany(group => group)
+      .ToArray();
+  }
+
   private static PhotoReportRow ToRow(
     PhotoScanCandidate candidate,
     int? groupId,
@@ -325,11 +385,17 @@ public sealed class DuplicatePhotoScanner
 
     public PixelFingerprint? Fingerprint { get; set; }
 
+    public string? QuickFingerprint { get; set; }
+
     public PhotoVerificationStatus Status { get; set; }
 
     public string? StatusMessage { get; set; }
 
     public long PixelCount => (long)(Metadata?.NormalizedWidth ?? 0) * (Metadata?.NormalizedHeight ?? 0);
+
+    public string DimensionKey => Metadata is null ?
+      "UNKNOWN" :
+      $"{Metadata.NormalizedWidth}x{Metadata.NormalizedHeight}";
 
     public static PhotoScanCandidate CreatePending(FileInfo fileInfo, PhotoMetadata metadata)
     {
