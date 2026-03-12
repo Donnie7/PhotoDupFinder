@@ -53,7 +53,7 @@ internal static class Program
     {
       var command = ParseScanCommand(args);
       var report = await ExecuteScanAsync(command.Options).ConfigureAwait(false);
-      RenderReport(report, browseGroups: false);
+      report = await RenderReportAsync(report, browseGroups: false).ConfigureAwait(false);
 
       if (!string.IsNullOrWhiteSpace(command.CsvOutputPath))
       {
@@ -184,7 +184,7 @@ internal static class Program
       MaxDegreeOfParallelism: maxDegree);
 
     var report = await ExecuteScanAsync(scanOptions).ConfigureAwait(false);
-    RenderReport(report, browseGroups: true);
+    report = await RenderReportAsync(report, browseGroups: true).ConfigureAwait(false);
 
     if (!string.IsNullOrWhiteSpace(csvPath))
     {
@@ -199,7 +199,6 @@ internal static class Program
     };
 
     await SettingsStore.SaveAsync(updatedSettings).ConfigureAwait(false);
-    WaitForKeypress();
   }
 
   private static async Task ViewLastReportAsync()
@@ -212,10 +211,7 @@ internal static class Program
       return;
     }
 
-    AnsiConsole.Clear();
-    RenderBanner();
-    RenderReport(report, browseGroups: true);
-    WaitForKeypress();
+    await RenderReportAsync(report, browseGroups: true).ConfigureAwait(false);
   }
 
   private static async Task ExportLastReportAsync()
@@ -410,10 +406,21 @@ internal static class Program
     WaitForKeypress();
   }
 
-  private static void RenderReport(ScanReport report, bool browseGroups)
+  private static async Task<ScanReport> RenderReportAsync(ScanReport report, bool browseGroups)
   {
     ArgumentNullException.ThrowIfNull(report);
 
+    if (!browseGroups)
+    {
+      RenderReportSections(report);
+      return report;
+    }
+
+    return await RunDuplicateReviewAsync(report).ConfigureAwait(false);
+  }
+
+  private static void RenderReportSections(ScanReport report)
+  {
     RenderSummary(report);
 
     if (report.DuplicateGroups.Count == 0)
@@ -425,11 +432,6 @@ internal static class Program
 
     RenderGroupOverview(report);
     RenderIssues(report);
-
-    if (browseGroups)
-    {
-      BrowseGroups(report);
-    }
   }
 
   private static void RenderSummary(ScanReport report)
@@ -494,36 +496,142 @@ internal static class Program
     AnsiConsole.WriteLine();
   }
 
-  private static void BrowseGroups(ScanReport report)
+  private static async Task<ScanReport> RunDuplicateReviewAsync(ScanReport report)
   {
     while (true)
     {
-      var choices = report.DuplicateGroups
-        .Select(group => $"Group #{group.GroupId} ({group.Files.Count} files, {HumanizeBytes(group.ReclaimableBytes)} reclaimable)")
-        .Append("Return")
-        .ToArray();
+      AnsiConsole.Clear();
+      RenderBanner();
+      RenderReportSections(report);
+
+      if (report.DuplicateGroups.Count == 0)
+      {
+        WaitForKeypress();
+        return report;
+      }
 
       var choice = AnsiConsole.Prompt(
         new SelectionPrompt<string>()
+          .Title($"[{AppTheme.PrimaryMarkup}]Choose how to work with the found duplicates[/]")
+          .AddChoices(
+            "Browse duplicate groups",
+            "Delete duplicates using the suggested keep in every group",
+            "Copy duplicate candidates to a backup folder",
+            "Return"));
+
+      switch (choice)
+      {
+        case "Browse duplicate groups":
+          report = await BrowseGroupsAsync(report).ConfigureAwait(false);
+          break;
+        case "Delete duplicates using the suggested keep in every group":
+          report = await DeleteDuplicatesAsync(
+              report,
+              report.DuplicateGroups
+                .Select(group => new DuplicateGroupReviewRequest(group, DuplicateReviewService.CreateSuggestedPlan(group)))
+                .ToArray())
+            .ConfigureAwait(false);
+          break;
+        case "Copy duplicate candidates to a backup folder":
+          CopyDuplicatesToBackup(
+            report,
+            report.DuplicateGroups
+              .Select(group => new DuplicateGroupReviewRequest(group, DuplicateReviewService.CreateSuggestedPlan(group)))
+              .ToArray());
+          break;
+        case "Return":
+          return report;
+      }
+    }
+  }
+
+  private static async Task<ScanReport> BrowseGroupsAsync(ScanReport report)
+  {
+    while (true)
+    {
+      if (report.DuplicateGroups.Count == 0)
+      {
+        return report;
+      }
+
+      AnsiConsole.Clear();
+      RenderBanner();
+      RenderSummary(report);
+      RenderGroupOverview(report);
+
+      var choices = report.DuplicateGroups
+        .Select(DuplicateGroupMenuChoice.ForGroup)
+        .Append(DuplicateGroupMenuChoice.Return())
+        .ToArray();
+
+      var choice = AnsiConsole.Prompt(
+        new SelectionPrompt<DuplicateGroupMenuChoice>()
           .Title($"[{AppTheme.PrimaryMarkup}]Browse duplicate groups[/]")
           .PageSize(Math.Min(choices.Length, 10))
           .AddChoices(choices));
 
-      if (choice == "Return")
+      if (choice.Group is null)
       {
-        return;
+        return report;
       }
 
-      var groupId = int.Parse(
-        choice.Split('#', ' ', StringSplitOptions.RemoveEmptyEntries)[1],
-        CultureInfo.InvariantCulture);
-      var group = report.DuplicateGroups.First(item => item.GroupId == groupId);
-      RenderGroupDetails(group);
+      report = await ReviewGroupAsync(report, choice.Group).ConfigureAwait(false);
     }
   }
 
-  private static void RenderGroupDetails(DuplicateGroup group)
+  private static async Task<ScanReport> ReviewGroupAsync(ScanReport report, DuplicateGroup initialGroup)
   {
+    var selectedKeepPath = initialGroup.SuggestedKeep.Path;
+
+    while (true)
+    {
+      var group = report.DuplicateGroups.FirstOrDefault(item => item.GroupId == initialGroup.GroupId);
+      if (group is null)
+      {
+        return report;
+      }
+
+      selectedKeepPath = ResolveSelectedKeepPath(group, selectedKeepPath);
+
+      AnsiConsole.Clear();
+      RenderBanner();
+      RenderGroupDetails(group, selectedKeepPath);
+
+      var choice = AnsiConsole.Prompt(
+        new SelectionPrompt<string>()
+          .Title($"[{AppTheme.PrimaryMarkup}]Choose an action for group #{group.GroupId}[/]")
+          .AddChoices(
+            "Select the photo to keep",
+            "Delete the other files in this group",
+            "Copy the other files in this group to a backup folder",
+            "Return"));
+
+      switch (choice)
+      {
+        case "Select the photo to keep":
+          selectedKeepPath = PromptForKeepPath(group, selectedKeepPath);
+          break;
+        case "Delete the other files in this group":
+          report = await DeleteDuplicatesAsync(
+              report,
+              [new DuplicateGroupReviewRequest(group, DuplicateReviewService.CreatePlan(group, selectedKeepPath))])
+            .ConfigureAwait(false);
+          return report;
+        case "Copy the other files in this group to a backup folder":
+          CopyDuplicatesToBackup(
+            report,
+            [new DuplicateGroupReviewRequest(group, DuplicateReviewService.CreatePlan(group, selectedKeepPath))]);
+          break;
+        case "Return":
+          return report;
+      }
+    }
+  }
+
+  private static void RenderGroupDetails(DuplicateGroup group, string selectedKeepPath)
+  {
+    selectedKeepPath = ResolveSelectedKeepPath(group, selectedKeepPath);
+
     AnsiConsole.Write(new Rule($"[{AppTheme.PrimaryMarkup}]Group #{group.GroupId} Details[/]").RuleStyle(new Style(foreground: AppTheme.BorderColor)));
 
     var table = new Table()
@@ -538,9 +646,13 @@ internal static class Program
 
     foreach (var file in group.Files)
     {
-      var decision = file.SuggestedKeep ?
+      var isSelectedKeep = string.Equals(file.Path, selectedKeepPath, StringComparison.OrdinalIgnoreCase);
+      var isSuggestedKeep = string.Equals(file.Path, group.SuggestedKeep.Path, StringComparison.OrdinalIgnoreCase);
+      var decision = isSelectedKeep ?
         $"[{AppTheme.SuccessMarkup}]Keep[/]" :
-        $"[{AppTheme.WarningMarkup}]Duplicate[/]";
+        isSuggestedKeep ?
+          $"[{AppTheme.AccentMarkup}]Suggested[/]" :
+          $"[{AppTheme.WarningMarkup}]Duplicate[/]";
 
       table.AddRow(
         decision,
@@ -551,9 +663,9 @@ internal static class Program
         Markup.Escape(file.Path));
     }
 
-    var keepPanel = new Panel(Markup.Escape(group.SuggestedKeep.KeepReason ?? "Suggested keep"))
+    var keepPanel = new Panel(Markup.Escape(BuildKeepSelectionSummary(group, selectedKeepPath)))
     {
-      Header = new PanelHeader($"[{AppTheme.AccentMarkup}]Why keep this file?[/]"),
+      Header = new PanelHeader($"[{AppTheme.AccentMarkup}]Current keep selection[/]"),
       Border = BoxBorder.Rounded,
     };
 
@@ -561,6 +673,312 @@ internal static class Program
     AnsiConsole.Write(table);
     AnsiConsole.Write(keepPanel);
     AnsiConsole.WriteLine();
+  }
+
+  private static string BuildKeepSelectionSummary(DuplicateGroup group, string selectedKeepPath)
+  {
+    var selectedKeep = group.Files.First(file =>
+      string.Equals(file.Path, selectedKeepPath, StringComparison.OrdinalIgnoreCase));
+
+    if (string.Equals(selectedKeepPath, group.SuggestedKeep.Path, StringComparison.OrdinalIgnoreCase))
+    {
+      return $"{selectedKeep.Path}{Environment.NewLine}{group.SuggestedKeep.KeepReason ?? "Suggested keep"}";
+    }
+
+    return $"{selectedKeep.Path}{Environment.NewLine}Custom keep selected for this group.{Environment.NewLine}Suggested keep: {group.SuggestedKeep.Path}{Environment.NewLine}{group.SuggestedKeep.KeepReason ?? "Suggested keep"}";
+  }
+
+  private static string ResolveSelectedKeepPath(DuplicateGroup group, string? selectedKeepPath)
+  {
+    if (!string.IsNullOrWhiteSpace(selectedKeepPath) &&
+        group.Files.Any(file => string.Equals(file.Path, selectedKeepPath, StringComparison.OrdinalIgnoreCase)))
+    {
+      return selectedKeepPath;
+    }
+
+    return group.SuggestedKeep.Path;
+  }
+
+  private static string PromptForKeepPath(DuplicateGroup group, string selectedKeepPath)
+  {
+    var choices = group.Files
+      .Select(file => KeepSelectionChoice.ForFile(file, group.SuggestedKeep.Path, selectedKeepPath))
+      .ToArray();
+
+    var choice = AnsiConsole.Prompt(
+      new SelectionPrompt<KeepSelectionChoice>()
+        .Title($"[{AppTheme.PrimaryMarkup}]Choose the file to keep in group #{group.GroupId}[/]")
+        .PageSize(Math.Min(choices.Length, 10))
+        .AddChoices(choices));
+
+    return choice.Path;
+  }
+
+  private static async Task<ScanReport> DeleteDuplicatesAsync(
+    ScanReport report,
+    IReadOnlyList<DuplicateGroupReviewRequest> requests)
+  {
+    var duplicateFiles = requests
+      .SelectMany(request => request.Plan.Duplicates)
+      .DistinctBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
+      .ToArray();
+
+    if (duplicateFiles.Length == 0)
+    {
+      AnsiConsole.Clear();
+      RenderBanner();
+      RenderInfo("There are no duplicate files left to delete for the current selection.");
+      WaitForKeypress();
+      return report;
+    }
+
+    var reclaimableBytes = duplicateFiles.Sum(file => file.FileSizeBytes);
+    var scopeDescription = requests.Count == 1 ?
+      "this duplicate group" :
+      $"{requests.Count} duplicate groups";
+
+    if (!ConfirmAction(
+          $"Delete {duplicateFiles.Length} duplicate file(s) from {scopeDescription}? " +
+          $"The selected keep photo in each group will be preserved, and up to {HumanizeBytes(reclaimableBytes)} can be reclaimed."))
+    {
+      return report;
+    }
+
+    var deletedPaths = new List<string>(duplicateFiles.Length);
+    var issues = new List<string>();
+
+    foreach (var file in duplicateFiles)
+    {
+      try
+      {
+        if (File.Exists(file.Path))
+        {
+          File.Delete(file.Path);
+        }
+
+        deletedPaths.Add(file.Path);
+      }
+      catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+      {
+        issues.Add($"{file.Path}: {ex.Message}");
+      }
+    }
+
+    var updatedReport = deletedPaths.Count > 0 ?
+      DuplicateReviewService.ApplyDeletedPaths(report, deletedPaths) :
+      report;
+    var persistenceWarning = deletedPaths.Count > 0 ?
+      await PersistReportAsync(updatedReport).ConfigureAwait(false) :
+      null;
+
+    AnsiConsole.Clear();
+    RenderBanner();
+
+    if (deletedPaths.Count > 0)
+    {
+      RenderInfo(
+        $"Deleted {deletedPaths.Count} duplicate file(s) from {scopeDescription}. " +
+        $"{updatedReport.DuplicateGroupCount} duplicate group(s) remain in the cached report.");
+    }
+    else
+    {
+      RenderWarning("No files were deleted.");
+    }
+
+    if (issues.Count > 0)
+    {
+      RenderWarning(BuildIssueSummary("Some files could not be deleted.", issues));
+    }
+
+    if (!string.IsNullOrWhiteSpace(persistenceWarning))
+    {
+      RenderWarning(persistenceWarning);
+    }
+
+    WaitForKeypress();
+    return updatedReport;
+  }
+
+  private static void CopyDuplicatesToBackup(
+    ScanReport report,
+    IReadOnlyList<DuplicateGroupReviewRequest> requests)
+  {
+    var duplicateFiles = requests
+      .SelectMany(request => request.Plan.Duplicates.Select(file => new DuplicateBackupItem(request.Group.GroupId, file)))
+      .DistinctBy(item => item.File.Path, StringComparer.OrdinalIgnoreCase)
+      .ToArray();
+
+    if (duplicateFiles.Length == 0)
+    {
+      AnsiConsole.Clear();
+      RenderBanner();
+      RenderInfo("There are no duplicate files left to copy for the current selection.");
+      WaitForKeypress();
+      return;
+    }
+
+    var backupRoot = PromptForBackupFolder(report);
+    var issues = new List<string>();
+    var copiedCount = 0;
+
+    foreach (var item in duplicateFiles)
+    {
+      try
+      {
+        if (!File.Exists(item.File.Path))
+        {
+          issues.Add($"{item.File.Path}: file not found");
+          continue;
+        }
+
+        var destinationPath = BuildBackupDestinationPath(report.RootPath, backupRoot, item.GroupId, item.File.Path);
+        var destinationDirectory = Path.GetDirectoryName(destinationPath);
+        if (!string.IsNullOrWhiteSpace(destinationDirectory))
+        {
+          Directory.CreateDirectory(destinationDirectory);
+        }
+
+        File.Copy(item.File.Path, destinationPath);
+        copiedCount++;
+      }
+      catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+      {
+        issues.Add($"{item.File.Path}: {ex.Message}");
+      }
+    }
+
+    AnsiConsole.Clear();
+    RenderBanner();
+    RenderInfo($"Copied {copiedCount} duplicate file(s) to {backupRoot}.");
+
+    if (issues.Count > 0)
+    {
+      RenderWarning(BuildIssueSummary("Some files could not be copied.", issues));
+    }
+
+    WaitForKeypress();
+  }
+
+  private static bool ConfirmAction(string message)
+  {
+    var choice = AnsiConsole.Prompt(
+      new SelectionPrompt<string>()
+        .Title($"[{AppTheme.WarningMarkup}]{Markup.Escape(message)}[/]")
+        .AddChoices("No", "Yes"));
+
+    return choice == "Yes";
+  }
+
+  private static string PromptForBackupFolder(ScanReport report)
+  {
+    AppPaths.EnsureBaseDirectory();
+    var defaultPath = Path.Combine(
+      AppPaths.BackupRootDirectoryPath,
+      $"backup-{DateTime.Now:yyyyMMdd-HHmmss}");
+
+    var backupPath = AnsiConsole.Prompt(
+      new TextPrompt<string>($"[{AppTheme.PrimaryMarkup}]Backup folder for duplicate copies[/]")
+        .DefaultValue(defaultPath)
+        .Validate(path => ValidateBackupPath(path, report.RootPath)));
+
+    Directory.CreateDirectory(backupPath);
+    return backupPath;
+  }
+
+  private static ValidationResult ValidateBackupPath(string path, string scanRoot)
+  {
+    if (string.IsNullOrWhiteSpace(path))
+    {
+      return ValidationResult.Error($"[{AppTheme.ErrorMarkup}]Choose a backup folder.[/]");
+    }
+
+    try
+    {
+      var fullBackupPath = EnsureTrailingSeparator(Path.GetFullPath(path));
+      var fullScanRoot = EnsureTrailingSeparator(Path.GetFullPath(scanRoot));
+
+      if (fullBackupPath.StartsWith(fullScanRoot, StringComparison.OrdinalIgnoreCase))
+      {
+        return ValidationResult.Error($"[{AppTheme.ErrorMarkup}]Choose a folder outside the scanned directory.[/]");
+      }
+    }
+    catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+    {
+      return ValidationResult.Error($"[{AppTheme.ErrorMarkup}]Invalid path: {Markup.Escape(ex.Message)}[/]");
+    }
+
+    return ValidationResult.Success();
+  }
+
+  private static string BuildBackupDestinationPath(
+    string rootPath,
+    string backupRoot,
+    int groupId,
+    string sourcePath)
+  {
+    var relativePath = Path.GetRelativePath(rootPath, sourcePath);
+    if (relativePath.StartsWith("..", StringComparison.OrdinalIgnoreCase) || Path.IsPathRooted(relativePath))
+    {
+      relativePath = Path.Combine($"group-{groupId:D4}", Path.GetFileName(sourcePath));
+    }
+
+    var destinationPath = Path.Combine(backupRoot, relativePath);
+    return EnsureUniquePath(destinationPath);
+  }
+
+  private static string EnsureUniquePath(string destinationPath)
+  {
+    if (!File.Exists(destinationPath))
+    {
+      return destinationPath;
+    }
+
+    var directory = Path.GetDirectoryName(destinationPath) ?? string.Empty;
+    var fileName = Path.GetFileNameWithoutExtension(destinationPath);
+    var extension = Path.GetExtension(destinationPath);
+    var suffix = 1;
+
+    while (true)
+    {
+      var candidate = Path.Combine(directory, $"{fileName}-copy-{suffix}{extension}");
+      if (!File.Exists(candidate))
+      {
+        return candidate;
+      }
+
+      suffix++;
+    }
+  }
+
+  private static string EnsureTrailingSeparator(string path) =>
+    path.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal) ||
+    path.EndsWith(Path.AltDirectorySeparatorChar.ToString(), StringComparison.Ordinal) ?
+      path :
+      $"{path}{Path.DirectorySeparatorChar}";
+
+  private static string BuildIssueSummary(string heading, IReadOnlyList<string> issues)
+  {
+    var visibleIssues = issues.Take(5).ToArray();
+    var summary = string.Join(Environment.NewLine, visibleIssues);
+    if (issues.Count > visibleIssues.Length)
+    {
+      summary = $"{summary}{Environment.NewLine}...and {issues.Count - visibleIssues.Length} more.";
+    }
+
+    return $"{heading}{Environment.NewLine}{summary}";
+  }
+
+  private static async Task<string?> PersistReportAsync(ScanReport report)
+  {
+    try
+    {
+      await ReportStore.SaveAsync(report).ConfigureAwait(false);
+      return null;
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+      return $"The cached report could not be updated: {ex.Message}";
+    }
   }
 
   private static void RenderIssues(ScanReport report)
@@ -729,6 +1147,44 @@ internal static class Program
     AnsiConsole.MarkupLine($"[{AppTheme.SecondaryMarkup}]Press any key to continue...[/]");
     Console.ReadKey(intercept: true);
   }
+
+  private sealed record DuplicateGroupMenuChoice(DuplicateGroup? Group, string Label)
+  {
+    public static DuplicateGroupMenuChoice ForGroup(DuplicateGroup group) =>
+      new(group, $"Group #{group.GroupId} ({group.Files.Count} files, {HumanizeBytes(group.ReclaimableBytes)} reclaimable)");
+
+    public static DuplicateGroupMenuChoice Return() => new(null, "Return");
+
+    public override string ToString() => Label;
+  }
+
+  private sealed record KeepSelectionChoice(string Path, string Label)
+  {
+    public static KeepSelectionChoice ForFile(PhotoReportRow file, string suggestedKeepPath, string selectedKeepPath)
+    {
+      var tags = new List<string>();
+      if (string.Equals(file.Path, selectedKeepPath, StringComparison.OrdinalIgnoreCase))
+      {
+        tags.Add("current");
+      }
+
+      if (string.Equals(file.Path, suggestedKeepPath, StringComparison.OrdinalIgnoreCase))
+      {
+        tags.Add("suggested");
+      }
+
+      var suffix = tags.Count == 0 ? string.Empty : $" ({string.Join(", ", tags)})";
+      return new KeepSelectionChoice(
+        file.Path,
+        $"{System.IO.Path.GetFileName(file.Path)} | {file.Width}x{file.Height} | {HumanizeBytes(file.FileSizeBytes)}{suffix} | {file.Path}");
+    }
+
+    public override string ToString() => Label;
+  }
+
+  private sealed record DuplicateGroupReviewRequest(DuplicateGroup Group, DuplicateSelectionPlan Plan);
+
+  private sealed record DuplicateBackupItem(int GroupId, PhotoReportRow File);
 
   private sealed record ScanCommand(ScanOptions Options, string? CsvOutputPath);
 }

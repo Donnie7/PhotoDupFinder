@@ -12,5 +12,7 @@ internal static class AppPaths
 
   public static string LegacyLastReportFilePath => Path.Combine(BaseDirectory, "last-report.json");
 
+  public static string BackupRootDirectoryPath => Path.Combine(BaseDirectory, "backups");
+
   public static void EnsureBaseDirectory() => Directory.CreateDirectory(BaseDirectory);
 }
