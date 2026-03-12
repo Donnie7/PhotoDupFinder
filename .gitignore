@@ -1,0 +1,15 @@
+bin/
+obj/
+.vs/
+.vscode/
+TestResults/
+artifacts/
+*.user
+*.suo
+*.cache
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+coverage/
+reports/

@@ -1,0 +1,43 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{EE14C5FD-991E-4EDE-B0C7-BBC1CFD304C9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhotoDupFinder.Core", "src\PhotoDupFinder.Core\PhotoDupFinder.Core.csproj", "{FD5FB2AE-1722-457C-A886-D52B879CE8F6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhotoDupFinder.Cli", "src\PhotoDupFinder.Cli\PhotoDupFinder.Cli.csproj", "{BBB9C4A2-60E2-409B-AF4A-4076F6993A3E}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{CF6D5766-0D15-4614-92DF-40FA2AA46FE9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhotoDupFinder.Core.Tests", "tests\PhotoDupFinder.Core.Tests\PhotoDupFinder.Core.Tests.csproj", "{5FD4CE1F-495A-4859-954E-1EE76499F559}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FD5FB2AE-1722-457C-A886-D52B879CE8F6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FD5FB2AE-1722-457C-A886-D52B879CE8F6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FD5FB2AE-1722-457C-A886-D52B879CE8F6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FD5FB2AE-1722-457C-A886-D52B879CE8F6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BBB9C4A2-60E2-409B-AF4A-4076F6993A3E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BBB9C4A2-60E2-409B-AF4A-4076F6993A3E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BBB9C4A2-60E2-409B-AF4A-4076F6993A3E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BBB9C4A2-60E2-409B-AF4A-4076F6993A3E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5FD4CE1F-495A-4859-954E-1EE76499F559}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5FD4CE1F-495A-4859-954E-1EE76499F559}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5FD4CE1F-495A-4859-954E-1EE76499F559}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5FD4CE1F-495A-4859-954E-1EE76499F559}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{FD5FB2AE-1722-457C-A886-D52B879CE8F6} = {EE14C5FD-991E-4EDE-B0C7-BBC1CFD304C9}
+		{BBB9C4A2-60E2-409B-AF4A-4076F6993A3E} = {EE14C5FD-991E-4EDE-B0C7-BBC1CFD304C9}
+		{5FD4CE1F-495A-4859-954E-1EE76499F559} = {CF6D5766-0D15-4614-92DF-40FA2AA46FE9}
+	EndGlobalSection
+EndGlobal
