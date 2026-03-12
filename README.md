@@ -12,19 +12,45 @@ PhotoDupFinder is a .NET 8 terminal application for finding duplicate photos by 
 - CSV export with suggested keep file and reclaimable space
 - Persistent last-report and local settings storage
 
-## Getting Started
+## Install As A Command
 
 ```powershell
 dotnet restore
 dotnet build
 dotnet test
-dotnet run --project .\src\PhotoDupFinder.Cli
 ```
 
-To scan a directory directly:
+Install the tool as a global command from this repo:
 
 ```powershell
-dotnet run --project .\src\PhotoDupFinder.Cli -- scan --root "D:\Photos" --csv ".\reports\scan.csv"
+.\install-tool.ps1
+photodupfinder
+```
+
+After that, use it anywhere:
+
+```powershell
+photodupfinder
+photodupfinder scan --root "D:\Photos" --csv ".\reports\scan.csv"
+```
+
+## Publish A Standalone EXE
+
+Build a standalone Windows executable without needing the source tree at runtime:
+
+```powershell
+.\publish-standalone.ps1
+.\artifacts\publish\win-x64\photodupfinder.exe
+```
+
+## Repo-Local Launch
+
+If you are running directly from the repo during development:
+
+```powershell
+.\photodupfinder
+.\photodupfinder help
+.\photodupfinder config
 ```
 
 As a packaged .NET tool:
