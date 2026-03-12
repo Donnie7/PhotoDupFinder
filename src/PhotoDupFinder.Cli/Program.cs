@@ -220,6 +220,7 @@ internal static class Program
   {
     RenderBanner();
     var report = default(ScanReport);
+    var saveWarning = default(string);
 
     await AnsiConsole.Status()
       .Spinner(Spinner.Known.Dots)
@@ -234,8 +235,20 @@ internal static class Program
           });
 
           report = await Scanner.ScanAsync(options, progress).ConfigureAwait(false);
-          await ReportStore.SaveAsync(report).ConfigureAwait(false);
+          try
+          {
+            await ReportStore.SaveAsync(report).ConfigureAwait(false);
+          }
+          catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+          {
+            saveWarning = $"Scan completed, but the local cached report could not be written: {ex.Message}";
+          }
         }).ConfigureAwait(false);
+
+    if (!string.IsNullOrWhiteSpace(saveWarning))
+    {
+      RenderWarning(saveWarning);
+    }
 
     return report!;
   }

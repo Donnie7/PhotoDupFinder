@@ -17,9 +17,12 @@ public sealed class CsvReportWriter
       Directory.CreateDirectory(directory);
     }
 
-    var builder = new StringBuilder();
-    builder.AppendLine(
-      "GroupId,Path,KeepSuggested,KeepReason,Format,Width,Height,FileSizeBytes,CaptureDate,Status,MetadataScore,Fingerprint");
+    await using var stream = File.Create(path);
+    await using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+    await writer.WriteLineAsync(
+        "GroupId,Path,KeepSuggested,KeepReason,Format,Width,Height,FileSizeBytes,CaptureDate,Status,MetadataScore,Fingerprint")
+      .ConfigureAwait(false);
 
     foreach (var file in report.AllFiles.OrderBy(row => row.DuplicateGroupId).ThenBy(row => row.Path, StringComparer.OrdinalIgnoreCase))
     {
@@ -39,11 +42,8 @@ public sealed class CsvReportWriter
         file.Fingerprint ?? string.Empty,
       };
 
-      builder.AppendLine(string.Join(",", values.Select(Escape)));
+      await writer.WriteLineAsync(string.Join(",", values.Select(Escape))).ConfigureAwait(false);
     }
-
-    await File.WriteAllTextAsync(path, builder.ToString(), Encoding.UTF8, cancellationToken)
-      .ConfigureAwait(false);
   }
 
   private static string Escape(string value)

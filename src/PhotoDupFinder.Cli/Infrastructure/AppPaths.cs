@@ -8,7 +8,9 @@ internal static class AppPaths
 
   public static string SettingsFilePath => Path.Combine(BaseDirectory, "settings.json");
 
-  public static string LastReportFilePath => Path.Combine(BaseDirectory, "last-report.json");
+  public static string LastReportFilePath => Path.Combine(BaseDirectory, "last-report.json.gz");
+
+  public static string LegacyLastReportFilePath => Path.Combine(BaseDirectory, "last-report.json");
 
   public static void EnsureBaseDirectory() => Directory.CreateDirectory(BaseDirectory);
 }

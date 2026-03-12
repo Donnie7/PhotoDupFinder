@@ -6,6 +6,8 @@ namespace PhotoDupFinder.Core.Services;
 
 public sealed class DuplicatePhotoScanner
 {
+  private const int MaxFingerprintParallelism = 2;
+
   private readonly IPhotoMetadataReader _metadataReader;
   private readonly IPixelFingerprintService _fingerprintService;
 
@@ -71,7 +73,7 @@ public sealed class DuplicatePhotoScanner
     var candidates = new ConcurrentBag<PhotoScanCandidate>();
     var processed = 0;
 
-    await Parallel.ForEachAsync(files, CreateParallelOptions(options, cancellationToken), (path, token) =>
+    await Parallel.ForEachAsync(files, CreateMetadataParallelOptions(options, cancellationToken), (path, token) =>
     {
       var fileInfo = new FileInfo(path);
 
@@ -119,7 +121,7 @@ public sealed class DuplicatePhotoScanner
     var total = fingerprintTargets.Length;
     var processed = 0;
 
-    await Parallel.ForEachAsync(fingerprintTargets, CreateParallelOptions(options, cancellationToken), (candidate, token) =>
+    await Parallel.ForEachAsync(fingerprintTargets, CreateFingerprintParallelOptions(options, cancellationToken), (candidate, token) =>
     {
       try
       {
@@ -149,13 +151,22 @@ public sealed class DuplicatePhotoScanner
       "Grouping verified files by normalized fingerprint."));
   }
 
-  private static ParallelOptions CreateParallelOptions(ScanOptions options, CancellationToken cancellationToken) =>
+  private static ParallelOptions CreateMetadataParallelOptions(ScanOptions options, CancellationToken cancellationToken) =>
     new()
     {
       CancellationToken = cancellationToken,
       MaxDegreeOfParallelism = options.MaxDegreeOfParallelism > 0 ?
         options.MaxDegreeOfParallelism :
         Environment.ProcessorCount,
+    };
+
+  private static ParallelOptions CreateFingerprintParallelOptions(ScanOptions options, CancellationToken cancellationToken) =>
+    new()
+    {
+      CancellationToken = cancellationToken,
+      MaxDegreeOfParallelism = options.MaxDegreeOfParallelism > 0 ?
+        Math.Min(options.MaxDegreeOfParallelism, MaxFingerprintParallelism) :
+        1,
     };
 
   private static ScanReport BuildReport(

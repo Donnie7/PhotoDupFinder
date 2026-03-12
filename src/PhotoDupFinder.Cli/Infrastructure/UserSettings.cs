@@ -8,5 +8,5 @@ internal sealed record UserSettings(
   public static UserSettings Default => new(
     DefaultScanRoot: Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
     LastCsvDirectory: Path.Combine(Environment.CurrentDirectory, "reports"),
-    MaxDegreeOfParallelism: Math.Max(1, Environment.ProcessorCount / 2));
+    MaxDegreeOfParallelism: 1);
 }
